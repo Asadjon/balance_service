@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+
+  balance_db:
+    image: postgres:15
+    restart: always
+    container_name: balance-postgres
+    environment:
+      POSTGRES_DB: balance_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 4929
+    ports:
+      - "5433:5432"
+    networks:
+      - network_mode
+
+  balance_service:
+    image: balance-service
+    container_name: balance-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - balance_db
+    expose:
+      - "8082"
+    networks:
+      - network_mode
+    env_file:
+      - ./.env
+
+networks:
+  network_mode:
+    name: app-network
+    external: true

@@ -11,6 +11,8 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 @Service
 @RequiredArgsConstructor
@@ -19,56 +21,70 @@ public class BalanceService {
     private final BalanceRepository balanceRepository;
     private final UserService userService;
 
-    public String initBalance(long userId) {
-        userService.validateUser(userId);
-
-        if (balanceRepository.existsById(userId))
-            throw new BalanceException("Balance has already been created for this user id: " + userId);
-
+    public CompletableFuture<String> initBalance(long userId) {
         var balance = Balance.builder()
                 .userId(userId)
                 .balance(BigDecimal.ZERO)
                 .updatedAt(LocalDateTime.now())
                 .build();
-        balanceRepository.save(balance);
 
-        return "Balance created";
+        return userService.validateUser(userId)
+                .thenCompose(userResponse -> existsByUserId(userResponse.getId())
+                        .thenCompose(isExists -> {
+                            if (isExists)
+                                throw new BalanceException("Balance has already been created for this user id: " + userId);
+
+                            return saveBalance(balance);
+                        })
+                        .thenApply(savedBalance -> "Balance created for this user: " + userResponse.getEmail())
+                );
     }
 
-    public BalanceResponse getUserBalance(long userId) {
-        userService.validateUser(userId);
+    public CompletableFuture<BalanceResponse> getUserBalance(long userId) {
+        return userService.validateUser(userId)
+                .thenCompose(userResponse -> findByUserId(userResponse.getId())
+                        .thenApply(balance -> balance.orElseThrow(() ->
+                                new BalanceException("User balance not found for this user: " + userResponse.getEmail()))))
 
-        var balance = balanceRepository.findBalanceByUserId(userId)
-                .orElseThrow(() -> new BalanceException("User balance not found"));
-
-        return new BalanceResponse(
-                balance.getUserId(),
-                balance.getBalance(),
-                balance.getUpdatedAt()
-        );
+                .thenApply(balance -> new BalanceResponse(
+                        balance.getUserId(),
+                        balance.getBalance(),
+                        balance.getUpdatedAt()));
     }
 
-    public String changeBalance(BalanceChangeRequest request) {
-        userService.validateUser(request.getUserId());
+    public CompletableFuture<String> changeBalance(BalanceChangeRequest request) {
+        return userService.validateUser(request.getUserId())
+                .thenCompose(userResponse -> findByUserId(userResponse.getId())
+                        .thenApply(balance -> balance.orElseThrow(() ->
+                                new BalanceException("User balance not found for this user: " + userResponse.getEmail()))))
+                .thenCompose(balance -> {
 
-        var balance = balanceRepository.findBalanceByUserId(request.getUserId())
-                .orElseThrow(() -> new BalanceException("User balance not found"));
+                    if (request.getType() == ChangeType.INCREASE)
+                        balance.setBalance(balance.getBalance().add(request.getAmount()));
 
-        if (request.getType() == ChangeType.INCREASE) {
+                    else if (request.getType() == ChangeType.DECREASE) {
 
-            balance.setBalance(balance.getBalance().add(request.getAmount()));
+                        if (balance.getBalance().compareTo(request.getAmount()) < 0)
+                            throw new BalanceException("Insufficient balance");
 
-        } else if (request.getType() == ChangeType.DECREASE) {
+                        balance.setBalance(balance.getBalance().subtract(request.getAmount()));
+                    }
 
-            if (balance.getBalance().compareTo(request.getAmount()) < 0)
-                throw new BalanceException("Insufficient balance");
+                    balance.setUpdatedAt(LocalDateTime.now());
+                    return saveBalance(balance);
+                })
+                .thenApply(balance -> "Balance updated");
+    }
 
-            balance.setBalance(balance.getBalance().subtract(request.getAmount()));
-        }
+    private CompletableFuture<Balance> saveBalance(Balance balance) {
+        return CompletableFuture.supplyAsync(() -> balanceRepository.save(balance));
+    }
 
-        balance.setUpdatedAt(LocalDateTime.now());
-        balanceRepository.save(balance);
+    private CompletableFuture<Boolean> existsByUserId(long userId) {
+        return CompletableFuture.supplyAsync(() -> balanceRepository.existsById(userId));
+    }
 
-        return "Balance updated";
+    private CompletableFuture<Optional<Balance>> findByUserId(long userId) {
+        return CompletableFuture.supplyAsync(() -> balanceRepository.findByUserId(userId));
     }
 }
